@@ -158,7 +158,9 @@ class Board(Generic[T]):
             shape = self.DEFAULT_SHAPE
         else:
             shape = tuple(
-                argument if isinstance(argument, Dimension) else Dimension.with_size(argument)
+                argument
+                if isinstance(argument, Dimension)
+                else Dimension.with_size(argument)
                 for argument in shape
             )
         self.state = BoardState[T](shape)
