@@ -7,21 +7,26 @@ class ChessDimension(Dimension):
     @classmethod
     def default_shape(cls, *, default_size: int | None = None) -> tuple["Dimension", ...]:
         return (
-            ChessFileDimension(size=default_size),
-            ChessRankDimension(size=default_size),
+            ChessFiles(size=default_size),
+            ChessRanks(size=default_size),
         )
 
 
-class ChessRankDimension(ChessDimension):
+class ChessRanks(ChessDimension):
     default_name = "ranks"
 
     def create_axis_name(self, idx: int) -> str:
         return str(idx)
 
 
-class ChessFileDimension(ChessDimension):
+class ChessFiles(ChessDimension):
     default_name = "files"
     files = "abcdefgh"
 
     def create_axis_name(self, idx: int) -> str:
         return self.files[idx]
+
+    def get_axis_index(self, name: str | int) -> int:
+        if isinstance(name, str):
+            name = name.casefold()
+        return super().get_axis_index(name)

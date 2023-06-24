@@ -12,22 +12,22 @@ BoardStateVT: TypeAlias = "BoardAxis | Any"
 
 
 class BoardState(UserDict[tuple[T, ...], BoardStateVT]):
-    shape: ShapeType
+    dims: ShapeType
 
     def __init__(self, shape: ShapeType):
         super().__init__()
-        self.shape = shape
+        self.dims = shape
 
     @property
     def ndim(self) -> int:
-        return len(self.shape)
+        return len(self.dims)
 
     def _validate_key_ndim(
         self,
         *,
         key: T | tuple[T, ...],
-        action: str = "access",
-        disallow_insights: bool = False
+        verb: str = "access",
+        allow_insights: bool = True
     ) -> tuple[tuple[T, ...], int]:
         if not isinstance(key, tuple):
             key = (key,)
@@ -35,28 +35,36 @@ class BoardState(UserDict[tuple[T, ...], BoardStateVT]):
         expected_shape = ", ".join("?" * self.ndim).join("()")
         if ndim > self.ndim:
             raise IndexError(
-                f"Cannot {action} a {ndim}-dimensional board entity "
+                f"Cannot {verb} a {ndim}-dimensional board entity "
                 f"in a {self.ndim}-dimensional board (got key: {key}; expected a key like: {expected_shape})"
             )
-        if disallow_insights:
+        if not allow_insights:
             if ndim < self.ndim:
                 raise NotImplementedError(
-                    f"Cannot {action} a {ndim}-dimensional board entity "
+                    f"Cannot {verb} a {ndim}-dimensional board entity "
                     f"in a {self.ndim}-dimensional board (got key: {key}; expected a key like: {expected_shape})"
                 )
         indices = []
         for size in range(ndim):
-            dim = self.shape[size]
-            indices.append(dim.get_axis_index(key[size]))
+            dim = self.dims[size]
+            index = dim.get_axis_index(key[size])
+            if index < 0:
+                index += dim.size
+            if index >= dim.size:
+                raise IndexError(
+                    f"axe index {index} is out of bounds: "
+                    f"dimension {dim.name!r} has only {dim.size} axes"
+                )
+            indices.append(index)
         return tuple(indices), ndim
 
     def __setitem__(self, key: T | tuple[T, ...], value):
-        key, ndim = self._validate_key_ndim(key=key, action="set")
+        key, ndim = self._validate_key_ndim(key=key, verb="set")
         if ndim == self.ndim:
             self.data[key] = value
         else:
-            nest = key[:ndim]
-            dim = self.shape[ndim]
+            path = key[:ndim]
+            dim = self.dims[ndim]
             if not isinstance(value, Sequence):
                 value = [value] * dim.size
             if len(value) != dim.size:
@@ -68,7 +76,7 @@ class BoardState(UserDict[tuple[T, ...], BoardStateVT]):
                     f"(raised for key: {key})"
                 )
             for i in range(dim.size):
-                self.data[(*nest, i)] = value[i]
+                self[(*path, i)] = value[i]
 
     def __getitem__(self, key: T | tuple[T, ...]):
         key, ndim = self._validate_key_ndim(key=key)
@@ -78,7 +86,7 @@ class BoardState(UserDict[tuple[T, ...], BoardStateVT]):
             return BoardAxis(
                 state=self,
                 path=key[:ndim],
-                dim=self.shape[ndim],
+                dim=self.dims[ndim],
             )
 
 
@@ -88,11 +96,11 @@ class BoardInsight(Generic[T]):
         *,
         state: BoardState,
         resolver: InsightResolverT,
-        readonly: bool = False,
+        read_only: bool = False,
     ):
         self.state = state
         self.resolver = resolver
-        self.read_only = readonly
+        self.read_only = read_only
 
     def __getitem__(self, key: T) -> T:
         resolved_key = self.resolver[key]
@@ -103,7 +111,6 @@ class BoardInsight(Generic[T]):
             raise TypeError("Cannot set a readonly insight")
         loc = self.resolver[key]
         self.state[loc] = value
-
 
 class BoardAxis(Generic[T]):
     def __init__(
@@ -144,26 +151,35 @@ class BoardAxis(Generic[T]):
         self.state[(*self.path, idx)] = value
 
     def __repr__(self):
-        return f"{type(self).__name__}(nest={self.path!r}, size={self.size!r})"
-
+        path = self.path
+        size = self.size
+        return f"{type(self).__name__}({path=!r}, {size=!r})"
 
 class Board(Generic[T]):
     DEFAULT_SHAPE: ClassVar[ShapeType]
 
     def __init__(
         self,
-        *shape: int
+        *dims: int | Dimension,
     ):
-        if not shape:
-            shape = self.DEFAULT_SHAPE
+        if not dims:
+            dims = self.DEFAULT_SHAPE
         else:
-            shape = tuple(
-                argument
-                if isinstance(argument, Dimension)
-                else Dimension.with_size(argument)
-                for argument in shape
+            dims = tuple(
+                dim_or_size
+                if isinstance(dim_or_size, Dimension)
+                else Dimension.with_size(dim_or_size)
+                for dim_or_size in dims
             )
-        self.state = BoardState[T](shape)
+        self.state = BoardState[T](dims)
+
+    @property
+    def dimensions(self) -> tuple[Dimension, ...]:
+        return self.dims
+
+    @property
+    def dims(self) -> tuple[Dimension, ...]:
+        return self.state.dims
 
     def __getitem__(self, key):
         return self.state[key]
