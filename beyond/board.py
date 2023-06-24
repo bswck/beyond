@@ -1,16 +1,19 @@
 from __future__ import annotations
 from collections import UserDict
 from collections.abc import Sequence
-from typing import ClassVar, TypeAlias, Generic, TypeVar
+from typing import ClassVar, TypeAlias, Generic, TypeVar, Any
 
-from beyond.dimension import Dimension, TicTacToeDimension
+from beyond.dimension import Dimension
 
-InsightValueT = TypeVar("InsightValueT")
-ShapeType: TypeAlias = tuple[Dimension, ...]
-InsightResolverT: TypeAlias = dict[int, int | tuple[int, ...]]
+T = TypeVar("T", str, int)
+ShapeType = tuple[Dimension, ...]
+InsightResolverT = dict[T, T | tuple[T, ...]]
+BoardStateVT: TypeAlias = "BoardAxis | Any"
 
 
-class BoardState(UserDict):
+class BoardState(UserDict[tuple[T, ...], BoardStateVT]):
+    shape: ShapeType
+
     def __init__(self, shape: ShapeType):
         super().__init__()
         self.shape = shape
@@ -22,11 +25,11 @@ class BoardState(UserDict):
     def _validate_key_ndim(
         self,
         *,
-        key: int | tuple[int, ...],
+        key: T | tuple[T, ...],
         action: str = "access",
         disallow_insights: bool = False
-    ) -> tuple[tuple[int, ...], int]:
-        if isinstance(key, int):
+    ) -> tuple[tuple[T, ...], int]:
+        if not isinstance(key, tuple):
             key = (key,)
         ndim = len(key)
         expected_shape = ", ".join("?" * self.ndim).join("()")
@@ -41,47 +44,45 @@ class BoardState(UserDict):
                     f"Cannot {action} a {ndim}-dimensional board entity "
                     f"in a {self.ndim}-dimensional board (got key: {key}; expected a key like: {expected_shape})"
                 )
-        return key, ndim
+        indices = []
+        for size in range(ndim):
+            dim = self.shape[size]
+            indices.append(dim.get_axis_index(key[size]))
+        return tuple(indices), ndim
 
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: T | tuple[T, ...], value):
         key, ndim = self._validate_key_ndim(key=key, action="set")
         if ndim == self.ndim:
             self.data[key] = value
         else:
             nest = key[:ndim]
+            dim = self.shape[ndim]
             if not isinstance(value, Sequence):
-                value = [value] * self.shape[ndim].size
-            if len(value) != self.shape[ndim].size:
+                value = [value] * dim.size
+            if len(value) != dim.size:
                 raise ValueError(
                     f"Cannot set {ndim}-dimensional board entity "
                     f"with a value of size {len(value)} "
                     f"in a {self.ndim}-dimensional board "
-                    f"with axes of length {self.shape[ndim].size}"
+                    f"with axes of length {dim.size}"
                     f"(raised for key: {key})"
                 )
-            for i in range(self.shape[ndim].size):
-                self[(*nest, i)] = value[i]
+            for i in range(dim.size):
+                self.data[(*nest, i)] = value[i]
 
-    def __getitem__(self, key: int | tuple[int, ...]):
+    def __getitem__(self, key: T | tuple[T, ...]):
         key, ndim = self._validate_key_ndim(key=key)
         if ndim == self.ndim:
             return self.data[key]
         else:
-            nest = key[:ndim]
-            resolver = {
-                resolved_key[-1]: resolved_key
-                for resolved_key in self
-                if resolved_key[:-1] == nest
-            }
             return BoardAxis(
                 state=self,
-                resolver=resolver,
-                nest=nest,
-                size=self.shape[ndim].size,
+                path=key[:ndim],
+                dim=self.shape[ndim],
             )
 
 
-class BoardInsight(Generic[InsightValueT]):
+class BoardInsight(Generic[T]):
     def __init__(
         self,
         *,
@@ -91,65 +92,63 @@ class BoardInsight(Generic[InsightValueT]):
     ):
         self.state = state
         self.resolver = resolver
-        self.readonly = readonly
+        self.read_only = readonly
 
-    def __getitem__(self, key: int) -> InsightValueT:
+    def __getitem__(self, key: T) -> T:
         resolved_key = self.resolver[key]
         return self.state[resolved_key]
 
-    def __setitem__(self, key: int, value: InsightValueT):
-        if self.readonly:
+    def __setitem__(self, key: T, value: T):
+        if self.read_only:
             raise TypeError("Cannot set a readonly insight")
         loc = self.resolver[key]
         self.state[loc] = value
 
 
-class BoardAxis(BoardInsight[InsightValueT]):
+class BoardAxis(Generic[T]):
     def __init__(
         self,
         *,
         state: BoardState,
-        resolver: InsightResolverT,
-        readonly: bool = False,
-        nest: tuple[int, ...],
-        size: int,
+        read_only: bool = False,
+        path: tuple[T, ...],
+        dim: Dimension,
     ):
-        super().__init__(
-            state=state,
-            resolver=resolver,
-            readonly=readonly
-        )
-        self.nest = nest
-        self.size = size
+        self.state = state
+        self.path = path
+        self.dim = dim
+        self.read_only = read_only
 
-    def __getitem__(self, key: int) -> InsightValueT:
-        if key < 0:
-            key += self.size
-        resolved_key = self.resolver.get(key)
-        if resolved_key is None:
-            if key >= self.size:
-                raise IndexError(f"Index {key} is out of bounds for axis at {self.nest}")
-            resolved_key = (*self.nest, key)
-        return self.state[resolved_key]
+    @property
+    def size(self) -> T:
+        return self.dim.size
 
-    def __setitem__(self, key: int, value: InsightValueT):
-        if self.readonly:
+    def _resolve_index(self, key: T) -> int:
+        idx = key
+        if isinstance(key, str):
+            idx = self.dim.get_axis_index(key)
+        return idx
+
+    def __getitem__(self, key: T) -> T:
+        idx = self._resolve_index(key)
+        if idx < 0:
+            idx += self.size
+        return self.state[(*self.path, idx)]
+
+    def __setitem__(self, key: T, value: T):
+        if self.read_only:
             raise TypeError("Cannot set a readonly insight")
-        if key < 0:
-            key += self.size
-        loc = self.resolver.get(key)
-        if loc is None:
-            if key >= self.size:
-                raise IndexError(f"Index {key} is out of bounds for axis at {self.nest}")
-            loc = (*self.nest, key)
-        self.state[loc] = value
+        idx = self._resolve_index(key)
+        if idx < 0:
+            idx += self.size
+        self.state[(*self.path, idx)] = value
 
     def __repr__(self):
-        return f"{type(self).__name__}(nest={self.nest!r}, size={self.size!r})"
+        return f"{type(self).__name__}(nest={self.path!r}, size={self.size!r})"
 
 
-class Board:
-    DEFAULT_SHAPE: ClassVar[ShapeType] = TicTacToeDimension.default_shape()
+class Board(Generic[T]):
+    DEFAULT_SHAPE: ClassVar[ShapeType]
 
     def __init__(
         self,
@@ -162,7 +161,7 @@ class Board:
                 argument if isinstance(argument, Dimension) else Dimension.with_size(argument)
                 for argument in shape
             )
-        self.state = BoardState(shape)
+        self.state = BoardState[T](shape)
 
     def __getitem__(self, key):
         return self.state[key]
